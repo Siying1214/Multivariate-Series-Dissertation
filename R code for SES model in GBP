@@ -1,0 +1,98 @@
+install.packages("feasts")
+library(tidyverse)
+library(lubridate)
+library(tsibble)
+library(fable)
+library(feasts)
+library(readr)
+
+# 1. Load and preprocess data
+setwd("C:/Users/杨思颖/Desktop/")
+gbp.ex <- read_csv("GBP_vs_USD_Exchange_Rates_New.csv", na = c("", "NA")) %>%
+  rename(Date = 1, GBP = 2) %>%
+  mutate(Date = dmy(Date)) %>%
+  as_tsibble(index = Date) %>%
+  fill_gaps() %>%
+  fill(GBP, .direction = "downup")
+
+# 2. Split training and test sets
+train_data <- gbp.ex %>%
+  filter(Date >= ymd("2023-10-01") & Date <= ymd("2025-03-16"))
+
+test_data <- gbp.ex %>%
+  filter(Date >= ymd("2025-03-17") & Date <= ymd("2025-04-30"))
+
+# -------------------------------
+# 1. Fit Simple Exponential Smoothing (ETS(A,N,N)) separately
+# -------------------------------
+fit_ets_ann <- train_data %>%
+  model(`ETS(A,N,N)` = ETS(GBP ~ error("A") + trend("N") + season("N")))
+
+fc_ets_ann <- forecast(fit_ets_ann, new_data = test_data)
+
+# Visualize ETS(A,N,N) forecast (separate plot)
+fc_ets_ann %>%
+  autoplot(gbp.ex, level = NULL) +
+  geom_line(data = test_data, aes(x = Date, y = GBP), color = "black", size = 0.8) +
+  labs(
+    title = "Simple Exponential Smoothing Forecast (ETS(A,N,N))",
+    y = "Exchange Rate (GBP/USD)",
+    x = "Date"
+  ) +
+  theme_minimal()
+# Output accuracy metrics (ETS(A,N,N))
+accuracy(fc_ets_ann, test_data)
+
+# -------------------------------
+# 2. Fit Holt’s and Damped Holt’s methods
+# -------------------------------
+fit_holt_damped <- train_data %>%
+  model(
+    `Holt's method` = ETS(GBP ~ error("A") + trend("A") + season("N")),
+    `Damped Holt's method` = ETS(GBP ~ error("A") + trend("Ad") + season("N"))  # Automatically estimate phi
+  )
+
+fc_holt_damped <- forecast(fit_holt_damped, new_data = test_data)
+
+# Visualize forecasts from Holt’s and Damped Holt’s methods (combined plot)
+fc_holt_damped %>%
+  autoplot(gbp.ex, level = NULL) +
+  geom_line(data = test_data, aes(x = Date, y = GBP), color = "black", size = 0.8) +
+  scale_color_manual(values = c(
+    "Holt's method" = "blue",
+    "Damped Holt's method" = "red"
+  )) +
+  labs(
+    title = "Forecasts from Holt's and Damped Holt's Methods",
+    subtitle = "Compared against actual GBP/USD",
+    y = "Exchange Rate (GBP/USD)",
+    x = "Date"
+  ) +
+  guides(colour = guide_legend(title = "Model")) +
+  theme_minimal()
+# Output accuracy metrics (Holt and Damped Holt)
+accuracy(fc_holt_damped, test_data)
+# Save model forecasts as CSV files
+
+# -------------------------------
+# 1. Save forecast results of ETS(A,N,N)
+# -------------------------------
+fc_ets_ann %>%
+  as_tibble() %>%
+  write_csv("C:/Users/杨思颖/Desktop/ETS_ANN_forecast.csv")
+
+# -------------------------------
+# 2. Save forecast results of Holt's method
+# -------------------------------
+fc_holt_damped %>%
+  filter(.model == "Holt's method") %>%
+  as_tibble() %>%
+  write_csv("C:/Users/杨思颖/Desktop/Holts_method_forecast.csv")
+
+# -------------------------------
+# 3. Save forecast results of Damped Holt's method
+# -------------------------------
+fc_holt_damped %>%
+  filter(.model == "Damped Holt's method") %>%
+  as_tibble() %>%
+  write_csv("C:/Users/杨思颖/Desktop/Damped_Holts_method_forecast.csv")
