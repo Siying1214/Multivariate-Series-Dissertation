@@ -1,0 +1,24 @@
+# 1. Load and preprocess data
+setwd("C:/Users/杨思颖/Desktop/")
+gbp.ex <- read_csv("GBP_vs_USD_Exchange_Rates_New.csv", na = c("", "NA")) %>%
+  rename(Date = 1, GBP = 2) %>%
+  mutate(Date = dmy(Date)) %>%
+  as_tsibble(index = Date) %>%
+  fill_gaps() %>%
+  fill(GBP, .direction = "downup")
+
+# 2. Difference the entire dataset
+gbp.ex_diff <- gbp.ex %>%
+  filter(Date >= ymd("2023-10-01") & Date <= ymd("2025-04-30")) %>%
+  mutate(GBP_diff = difference(GBP)) %>%
+  drop_na(GBP_diff)  # Remove NA caused by differencing at t=1
+
+# 3. Visualize the differenced data
+library(ggplot2)
+
+ggplot(gbp.ex_diff, aes(x = Date, y = GBP_diff)) +
+  geom_line(color = "blue") +
+  labs(title = "Differenced GBP Data",
+       x = "Date",
+       y = "Differenced Value") +
+  theme_minimal()
