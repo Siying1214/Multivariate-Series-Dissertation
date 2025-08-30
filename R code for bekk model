@@ -1,0 +1,119 @@
+library(tidyverse)      # Includes readr, dplyr, ggplot2, etc.
+library(lubridate)      # For dmy date processing
+library(tsibble)        # For time series data (tsibble)
+install.packages("rmgarch")
+library(rmgarch)
+
+# Set the working directory
+setwd("C:/Users/杨思颖/Desktop/")
+
+# Read & preprocess (do not change)
+fx_data <- readr::read_csv("Excahnge Rates vs USD.csv", na = c("", "NA")) %>%
+  dplyr::rename(Date = 1) %>%
+  dplyr::mutate(Date = lubridate::dmy(Date)) %>%
+  tsibble::as_tsibble(index = Date) %>%
+  tsibble::fill_gaps() %>%
+  tidyr::fill(c(GBP, AUD, CHF), .direction = "downup")
+
+# Calculate log returns for GBP (key: use dplyr::select / dplyr::mutate / dplyr::lag)
+gbp_data <- fx_data %>%
+  dplyr::select(Date, GBP) %>%
+  dplyr::mutate(log_ret_GBP = log(GBP) - log(dplyr::lag(GBP))) %>%
+  tidyr::drop_na()
+
+# Extract AUD and calculate log returns
+aud_data <- fx_data %>%
+  dplyr::select(Date, AUD) %>%
+  dplyr::mutate(log_ret_AUD = log(AUD) - log(dplyr::lag(AUD))) %>%
+  tidyr::drop_na()
+
+# Extract CHF and calculate log returns
+chf_data <- fx_data %>%
+  dplyr::select(Date, CHF) %>%
+  dplyr::mutate(log_ret_CHF = log(CHF) - log(dplyr::lag(CHF))) %>%
+  tidyr::drop_na()
+
+# Split GBP into training and test sets
+train_set_GBP <- gbp_data %>%
+  filter(Date >= ymd("2023-10-01") & Date <= ymd("2025-03-16"))
+test_set_GBP <- gbp_data %>%
+  filter(Date >= ymd("2025-03-17") & Date <= ymd("2025-04-30"))
+
+# Split AUD into training and test sets
+train_set_AUD <- aud_data %>%
+  filter(Date >= ymd("2023-10-01") & Date <= ymd("2025-03-16"))
+test_set_AUD <- aud_data %>%
+  filter(Date >= ymd("2025-03-17") & Date <= ymd("2025-04-30"))
+
+# Split CHF into training and test sets
+train_set_CHF <- chf_data %>%
+  filter(Date >= ymd("2023-10-01") & Date <= ymd("2025-03-16"))
+test_set_CHF <- chf_data %>%
+  filter(Date >= ymd("2025-03-17") & Date <= ymd("2025-04-30"))
+
+# Construct the data matrix
+log_ret_matrix <- cbind(
+  log_ret_GBP = train_set_GBP$log_ret_GBP,
+  log_ret_AUD = train_set_AUD$log_ret_AUD,
+  log_ret_CHF = train_set_CHF$log_ret_CHF
+)
+log_ret_matrix <- as.matrix(log_ret_matrix)
+
+library(forecast)  # For ARMA model fitting
+library(BEKKs)     # For BEKK model
+library(tidyr)     # For filling missing values
+
+# Fit ARMA models for GBP, AUD, CHF and extract residuals
+arma_model_fit_gbp <- arima(x = train_set_GBP$log_ret_GBP, order = c(0, 0, 0), include.mean = F)
+arma_model_fit_aud <- arima(x = train_set_AUD$log_ret_AUD, order = c(0, 0, 0), include.mean = F)
+arma_model_fit_chf <- arima(x = train_set_CHF$log_ret_CHF, order = c(0, 0, 0), include.mean = F)
+
+# Extract ARMA residuals
+res_gbp <- residuals(arma_model_fit_gbp)
+res_aud <- residuals(arma_model_fit_aud)
+res_chf <- residuals(arma_model_fit_chf)
+
+# Build ARMA residual matrix
+arma_residual_matrix <- cbind(res_gbp, res_aud, res_chf)
+
+# Define model specification (without QML parameter)
+spec <- BEKKs::bekk_spec(model = list(type = "dbekk", order=c(4,4), asymmetric = FALSE))
+
+# Fit the model with QML_t_ratios = TRUE
+fit <- BEKKs::bekk_fit(
+  spec,
+  data = arma_residual_matrix,
+  QML_t_ratios = TRUE,     # Correct placement here
+  max_iter = 1000
+)
+plot(fit)
+
+# Export to high-resolution PDF file
+pdf("dbekk_plot_output.pdf", width = 12, height = 9)
+par(mfrow = c(3, 3), mar = c(4, 4, 4, 2), cex.main = 1.2)
+plot(fit)
+dev.off()
+
+fit$G_sd
+
+# Extract residuals (standardized residuals)
+resid_mat <- fit$e_t  # Standardized residuals from BEKK model
+
+# Extract conditional covariance matrix (sigma_t)
+sigma_mat <- fit$sigma_t  # Conditional covariance matrix from BEKK model
+
+# Standardize residuals by dividing with sqrt of diagonal elements of covariance matrix
+std_resid <- resid_mat / sqrt(diag(sigma_mat))
+
+# Apply Ljung-Box test on each column of standardized residuals (check for white noise)
+ljung_results <- apply(std_resid, 2, function(x) {
+  Box.test(x, lag = 10, type = "Ljung-Box")
+})
+
+# Output Ljung-Box test results
+for (i in 1:ncol(std_resid)) {
+  cat("\n--- Ljung-Box Test for series", colnames(std_resid)[i], "---\n")
+  print(ljung_results[[i]])
+}
+
+# Apply ARCH-LM test on each column of standardized residuals (check for heteroskedas
