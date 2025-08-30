@@ -1,0 +1,111 @@
+# --- 1. Packages & data ---
+library(tidyverse)
+library(tsibble)
+library(lubridate)
+library(forecast)   # use forecast::forecast/accuracy
+library(ggplot2)
+
+setwd("C:/Users/杨思颖/Desktop/")
+
+gbp.ex <- read_csv("GBP_vs_USD_Exchange_Rates_New.csv", na = c("", "NA")) %>%
+  rename(Date = 1, GBP = 2) %>%
+  mutate(Date = dmy(Date)) %>%
+  as_tsibble(index = Date) %>%
+  fill_gaps() %>%
+  fill(GBP, .direction = "downup")
+
+# --- 2. Train/Test split ---
+train_data <- gbp.ex %>% filter(Date >= ymd("2023-10-01") & Date <= ymd("2025-03-16"))
+test_data  <- gbp.ex %>% filter(Date >= ymd("2025-03-17") & Date <= ymd("2025-04-30"))
+
+# --- 3. Fit ARIMA(0,1,0) on TRAIN ONLY (no constant) ---
+arima_fit <- arima(x = as.numeric(train_data$GBP), order = c(0,1,0), include.mean = FALSE)
+
+# --- 4. Residual ACF/PACF (remove NA before plotting) ---
+resid_train <- residuals(arima_fit)
+resid_train <- resid_train[!is.na(resid_train)]
+acf(resid_train, lag.max = 30,
+    main = "ACF of Squared Residuals: ARIMA(0,1,0) (Train, no mean)")
+pacf(resid_train,
+     main = "PACF of Residuals: ARIMA(0,1,0) (Train, no mean)")
+
+# --- 5. Save fitted values from the training period (align by removing NA) ---
+fitted_vals <- fitted(arima_fit)                    # may contain NA at the beginning
+fitted_vals <- as.numeric(fitted_vals[!is.na(fitted_vals)])
+fit_len <- length(fitted_vals)
+
+fitted_results_df <- tibble(
+  Date       = tail(train_data$Date, fit_len),
+  Actual_GBP = tail(train_data$GBP, fit_len),
+  Fitted_GBP = fitted_vals
+)
+write.csv(fitted_results_df,
+          file = "ARIMA_010_NoMean_Training_Fitted_Results.csv",
+          row.names = FALSE)
+
+# --- 6. Forecast the test period ---
+h_steps <- nrow(test_data)
+
+# 6a) Use predict() to get means and standard errors (for CI bands in plots)
+pred_obj <- predict(arima_fit, n.ahead = h_steps)
+predicted_values <- as.numeric(pred_obj$pred)
+se_values       <- as.numeric(pred_obj$se)
+
+# 6b) Use forecast() to generate a forecast object (for accuracy evaluation)
+fc_obj <- forecast(arima_fit, h = h_steps)
+fc_acc <- accuracy(fc_obj, test_data$GBP)
+
+# Save forecast means (can also save CI if needed)
+prediction_df <- tibble(
+  Date          = test_data$Date,
+  Actual_GBP    = as.numeric(test_data$GBP),
+  Predicted_GBP = predicted_values
+)
+write.csv(prediction_df,
+          file = "ARIMA_010_NoMean_Predictions.csv",
+          row.names = FALSE)
+
+# --- 7. Visualization (training + test actuals + forecasts with 95% CI) ---
+plot_df <- bind_rows(
+  tibble(Date = train_data$Date, Type = "Training Data", Value = as.numeric(train_data$GBP)),
+  tibble(Date = test_data$Date,  Type = "Actual Test Data", Value = as.numeric(test_data$GBP))
+)
+
+prediction_plot_df <- tibble(
+  Date     = test_data$Date,
+  Type     = "Predicted Values",
+  Value    = predicted_values,
+  Lower_CI = predicted_values - 1.96 * se_values,
+  Upper_CI = predicted_values + 1.96 * se_values
+)
+
+full_plot_df <- bind_rows(
+  plot_df,
+  prediction_plot_df %>% dplyr::select(Date, Type, Value)
+) %>%
+  dplyr::mutate(Type = factor(Type,
+                              levels = c("Training Data", "Actual Test Data", "Predicted Values")))
+
+ggplot(full_plot_df, aes(x = Date, y = Value, color = Type)) +
+  # Draw CI bands first (so that lines are visible on top)
+  geom_ribbon(
+    data = prediction_plot_df,
+    aes(x = Date, ymin = Lower_CI, ymax = Upper_CI),
+    fill = "blue", alpha = 0.10, inherit.aes = FALSE
+  ) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    title = "ARIMA(0,1,0) Forecast vs Actual (No Constant)",
+    x = "Date", y = "GBP Exchange Rate", color = "Series"
+  ) +
+  scale_color_manual(values = c(
+    "Training Data" = "blue",
+    "Actual Test Data" = "darkgreen",
+    "Predicted Values" = "red"
+  )) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+
+# Check forecast accuracy
+print(fc_acc)
