@@ -1,0 +1,57 @@
+#R code for description of the univariate data in chapter 2 (2.1)
+library(ggplot2)
+library(lubridate)
+library(zoo)
+library(imputeTS)
+library(timeDate)
+library(xts)
+
+gbp.ex=read.csv(file="GBP_vs_USD_Exchange_Rates_New.csv",  header=T, na.strings=c("","NA"))
+summary(gbp.ex)
+names(gbp.ex)
+head(gbp.ex)
+
+########
+
+gbp.ex$date <- as.Date(gbp.ex$date,
+                       format = "%d/%m/%Y")
+
+gbp.ex<-data.frame(gbp.ex)
+
+head(gbp.ex)
+
+###############
+
+
+# Plotting the data
+
+
+ggplot(gbp.ex, aes(x = date, y = GBP)) +
+  geom_point() +
+  labs(
+    title = "Time Series Plot of GBP Exchange Rates vs USD", 
+    subtitle="1 Oct 2023 to 30 April 2025",
+    x = "Date",
+    y = "GBP vs USD"
+  ) +
+  theme_minimal()  # Clean theme
+
+###############
+
+# quickly plot the data and include a title using main = ""
+# use '\n' to force the string to wrap onto a new line
+
+ggplot(gbp.ex, aes(x = date, y = GBP)) +
+  geom_line(color = "black", size = 1) +  # Line plot
+  #  geom_point(color = "red", size = 2) +  # Optional: Add points
+  geom_smooth(method = "loess", span=0.5, se = FALSE, color = "red")+ # Add smooth line
+  geom_smooth(method = "loess", span=0.1, se = FALSE, color = "blue")+ 
+  labs(
+    title = "Time Series Plot of GBP Exchange Rates vs USD", 
+    subtitle="3 Oct 2023 to 30 April 2025",
+    x = "Date",
+    y = "GBP vs USD"
+  ) +
+  theme_minimal()  # Clean theme
+
+#################
