@@ -1,0 +1,186 @@
+library(tidyverse)      # includes readr, dplyr, ggplot2, etc.
+library(lubridate)      # used for dmy date processing
+library(tsibble)        # used for time series data (tsibble)
+# Set the working directory
+setwd("C:/Users/杨思颖/Desktop/")
+# Read & preprocess (unchanged)
+fx_data <- readr::read_csv("Excahnge Rates vs USD.csv", na = c("", "NA")) %>%
+  dplyr::rename(Date = 1) %>%
+  dplyr::mutate(Date = lubridate::dmy(Date)) %>%
+  tsibble::as_tsibble(index = Date) %>%
+  tsibble::fill_gaps() %>%
+  tidyr::fill(c(GBP, AUD, CHF), .direction = "downup")
+
+# Calculate GBP log returns (key: use dplyr::select / dplyr::mutate / dplyr::lag)
+gbp_data <- fx_data %>%
+  dplyr::select(Date, GBP) %>%
+  dplyr::mutate(log_ret_GBP = log(GBP) - log(dplyr::lag(GBP))) %>%
+  tidyr::drop_na()
+
+# Extract AUD and calculate log returns
+aud_data <- fx_data %>%
+  dplyr::select(Date, AUD) %>%
+  dplyr::mutate(log_ret_AUD = log(AUD) - log(dplyr::lag(AUD))) %>%
+  tidyr::drop_na()
+
+# Extract CHF and calculate log returns
+chf_data <- fx_data %>%
+  dplyr::select(Date, CHF) %>%
+  dplyr::mutate(log_ret_CHF = log(CHF) - log(dplyr::lag(CHF))) %>%
+  tidyr::drop_na()
+
+# Split training and testing sets (by date)
+train_set_GBP <- gbp_data %>%
+  filter(Date >= ymd("2023-10-01") & Date <= ymd("2025-03-16"))
+test_set_GBP <- gbp_data %>%
+  filter(Date >= ymd("2025-03-17") & Date <= ymd("2025-04-30"))
+
+train_set_AUD <- aud_data %>%
+  filter(Date >= ymd("2023-10-01") & Date <= ymd("2025-03-16"))
+test_set_AUD <- aud_data %>%
+  filter(Date >= ymd("2025-03-17") & Date <= ymd("2025-04-30"))
+
+train_set_CHF <- chf_data %>%
+  filter(Date >= ymd("2023-10-01") & Date <= ymd("2025-03-16"))
+test_set_CHF <- chf_data %>%
+  filter(Date >= ymd("2025-03-17") & Date <= ymd("2025-04-30"))
+
+# Build ARMA + GARCH model
+spec_arima_garch <- ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(0, 1)),
+  mean.model = list(armaOrder = c(0, 0), include.mean = FALSE),
+  distribution.model = "std"  # can be replaced with "norm", "ged", "sstd"
+)
+
+# Extract GBP log returns from training set
+train_logret_gbp <- train_set_GBP$log_ret_GBP
+train_logret_aud <- train_set_AUD$log_ret_AUD
+train_logret_chf <- train_set_CHF$log_ret_CHF
+
+# Fit models
+fit_garch_gbp <- ugarchfit(spec = spec_arima_garch, data = train_logret_gbp)
+fit_garch_aud <- ugarchfit(spec = spec_arima_garch, data = train_logret_aud)
+fit_garch_chf <- ugarchfit(spec = spec_arima_garch, data = train_logret_chf)
+
+# Print results
+print(fit_garch_gbp)
+print(fit_garch_aud)
+print(fit_garch_chf)
+
+# Load necessary packages
+library(ggplot2)
+library(rugarch)
+
+# Get conditional standard deviations from GARCH models
+garch_gbp_cond_sd <- sigma(fit_garch_gbp)
+garch_aud_cond_sd <- sigma(fit_garch_aud)
+garch_chf_cond_sd <- sigma(fit_garch_chf)
+
+# Create time series data frames containing date and conditional SD
+garch_gbp_data <- data.frame(Date = train_set_GBP$Date, Conditional_SD = garch_gbp_cond_sd)
+garch_aud_data <- data.frame(Date = train_set_AUD$Date, Conditional_SD = garch_aud_cond_sd)
+garch_chf_data <- data.frame(Date = train_set_CHF$Date, Conditional_SD = garch_chf_cond_sd)
+
+# Plot conditional standard deviations of three series
+p1 <- ggplot(garch_gbp_data, aes(x = Date, y = Conditional_SD)) +
+  geom_line(color = "blue") +
+  ggtitle("Conditional Standard Deviation of GBP") +
+  xlab("Date") + ylab("Conditional Standard Deviation") +
+  scale_y_continuous(limits = c(0.0036, 0.0052)) +
+  theme_minimal()
+
+p2 <- ggplot(garch_aud_data, aes(x = Date, y = Conditional_SD)) +
+  geom_line(color = "green") +
+  ggtitle("Conditional Standard Deviation of AUD") +
+  xlab("Date") + ylab("Conditional Standard Deviation") +
+  scale_y_continuous(limits = c(0.00425, 0.00675)) +
+  theme_minimal()
+
+p3 <- ggplot(garch_chf_data, aes(x = Date, y = Conditional_SD)) +
+  geom_line(color = "red") +
+  ggtitle("Conditional Standard Deviation of CHF") +
+  xlab("Date") + ylab("Conditional Standard Deviation") +
+  scale_y_continuous(limits = c(0.00375, 0.00725)) +
+  theme_minimal()
+
+# Extract standardized residuals
+resid_gbp_garch <- residuals(fit_garch_gbp, standardize = TRUE)
+resid_aud_garch <- residuals(fit_garch_aud, standardize = TRUE)
+resid_chf_garch <- residuals(fit_garch_chf, standardize = TRUE) 
+
+# Ljung-Box test (on residuals)
+Box.test(resid_gbp_garch, lag = 20, type = "Ljung-Box")
+Box.test(resid_aud_garch, lag = 20, type = "Ljung-Box")
+Box.test(resid_chf_garch, lag = 20, type = "Ljung-Box")
+
+# Ljung-Box test (on squared residuals, to detect remaining ARCH effects)
+Box.test(resid_gbp_garch^2, lag = 20, type = "Ljung-Box")
+Box.test(resid_aud_garch^2, lag = 20, type = "Ljung-Box")
+Box.test(resid_chf_garch^2, lag = 20, type = "Ljung-Box")
+
+# Combine into a 3D matrix
+sim.data3 <- cbind(resid_gbp_garch, resid_aud_garch, resid_chf_garch)
+colnames(sim.data3) <- c("GBP", "AUD", "CHF")
+sim.data3 <- as.matrix(sim.data3)
+my.std.data <- as.data.frame(sim.data3)
+colnames(my.std.data) <- c("GBP", "AUD", "CHF")
+
+# Bootstrap Tail Dependence Index with Joint Sampling
+bootstrap_tail_dependence <- function(i, j, n_boot = 1000, alpha = 0.05) {
+  set.seed(123)
+  data = my.std.data
+  U = rank(data[,i]) / (nrow(data) + 1)
+  V = rank(data[,j]) / (nrow(data) + 1)
+  
+  low.emp = function(z) sum((V <= z) & (U <= z)) / sum(V <= z)
+  up.emp  = function(z) sum((V >= 1 - z) & (U >= 1 - z)) / sum(V >= 1 - z)
+  
+  u = seq(0.002, 0.5, by = 0.002)
+  Left  = Vectorize(low.emp)(u)
+  Right = Vectorize(up.emp)(rev(u))
+  
+  # Save results of each bootstrap iteration
+  boot_left  <- matrix(NA, nrow = n_boot, ncol = length(u))
+  boot_right <- matrix(NA, nrow = n_boot, ncol = length(u))
+  
+  n <- nrow(data)
+  
+  for (b in 1:n_boot) {
+    # Resample rows to maintain dependence structure among 3 variables
+    sampled_idx <- sample(1:n, size = n, replace = TRUE)
+    data_b <- data[sampled_idx, ]
+    U_b <- rank(data_b[,i]) / (n + 1)
+    V_b <- rank(data_b[,j]) / (n + 1)
+    
+    low.emp.b <- function(z) sum((V_b <= z) & (U_b <= z)) / sum(V_b <= z)
+    up.emp.b  <- function(z) sum((V_b >= 1 - z) & (U_b >= 1 - z)) / sum(V_b >= 1 - z)
+    
+    boot_left[b, ]  <- Vectorize(low.emp.b)(u)
+    boot_right[b, ] <- Vectorize(up.emp.b)(rev(u))
+  }
+  
+  # CI bounds
+  left_ci  <- apply(boot_left, 2, quantile, probs = c(alpha/2, 1 - alpha/2), na.rm = TRUE)
+  right_ci <- apply(boot_right, 2, quantile, probs = c(alpha/2, 1 - alpha/2), na.rm = TRUE)
+  
+  # Plot
+  name = paste("Bootstrap Tail Dependence:", colnames(data)[i], "vs", colnames(data)[j])
+  plot(c(u, u + 0.5 - u[1]), c(Left, Right), type = "l", ylim = c(0, 1),
+       xlab = "Quantile", ylab = "Tail dependence", main = name, lwd = 2, col = "blue")
+  
+  # Blue shaded confidence intervals
+  polygon(c(u, rev(u)), 
+          c(left_ci[1,], rev(left_ci[2,])), 
+          col = rgb(0.2, 0.4, 1, 0.3), border = NA)
+  
+  polygon(c(u + 0.5 - u[1], rev(u + 0.5 - u[1])), 
+          c(right_ci[1,], rev(right_ci[2,])), 
+          col = rgb(0.2, 0.4, 1, 0.3), border = NA)
+  
+  # Redraw main curve as blue line
+  lines(c(u, u + 0.5 - u[1]), c(Left, Right), lwd = 2, col = "blue")
+}
+
+bootstrap_tail_dependence(1, 2)
+bootstrap_tail_dependence(1, 3)
+bootstrap_tail_dependence(2, 3)
